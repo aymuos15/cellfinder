@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
 import numpy as np
+import torch
 import tqdm
 from brainglobe_utils.cells.cells import Cell
 from brainglobe_utils.general.system import get_num_processes
@@ -20,9 +21,40 @@ from cellfinder.core.tools.image_processing import dataset_mean_std
 from cellfinder.core.tools.tools import (
     deprecate_positional_args,
     ensure_3d,
+    validate_central_planes,
     validate_dimensions,
 )
 from cellfinder.core.train.train_yaml import depth_type, models
+
+
+def _classify_2d_batch(model, data, z_axis, infer_z_planes, infer_pool):
+    """Run a 2D model on a cube batch and return per-candidate predictions.
+
+    For single-plane inference the depth-1 z axis is squeezed. For 2.5D
+    inference (``infer_z_planes`` > 1) the central z-planes are folded into the
+    batch, scored independently by the same 2D model, then pooled per
+    candidate: ``mean`` averages the softmax, ``vote`` averages the per-plane
+    one-hot decisions (a majority).
+    """
+    n_planes = data.shape[z_axis]
+    if infer_z_planes == 1:
+        if n_planes != 1:
+            raise ValueError(
+                "2D classification expects a depth-1 cube, but got depth "
+                f"{n_planes}"
+            )
+        return model(data.squeeze(z_axis))
+
+    batch = data.shape[0]
+    folded = data.movedim(z_axis, 1)
+    planes = folded.reshape(batch * n_planes, *folded.shape[2:])
+    per_plane = model(planes).reshape(batch, n_planes, -1)
+    if infer_pool == "vote":
+        votes = torch.nn.functional.one_hot(
+            per_plane.argmax(dim=-1), per_plane.shape[-1]
+        ).to(per_plane.dtype)
+        return votes.mean(dim=1)
+    return per_plane.mean(dim=1)
 
 
 @deprecate_positional_args
@@ -44,6 +76,8 @@ def main(
     max_workers: int = 3,
     pin_memory: bool = False,
     dimensions: int = 3,
+    infer_z_planes: int = 1,
+    infer_pool: str = "mean",
     callback: Optional[Callable[[int], None]] = None,
     normalize_channels: bool = False,
     normalization_n_sampling_planes: int = 50,
@@ -102,6 +136,15 @@ def main(
         Whether to classify using a 3D network (a z-stack cube, the default)
         or a 2D network (a single plane). When 2, 2D signal/background arrays
         are accepted and a depth-1 cube is squeezed to a 2D (y, x, c) image.
+    infer_z_planes: int
+        2.5D inference. When greater than 1 (2D networks only), the 2D model
+        is run on this many central z-planes per candidate and the per-plane
+        predictions are pooled. Defaults to 1 (single-plane 2D inference). No
+        retraining is needed; any single-plane 2D model can be used.
+    infer_pool: str
+        How per-plane predictions are pooled when ``infer_z_planes`` > 1.
+        ``"mean"`` averages the softmax probabilities (the default and
+        recommended); ``"vote"`` takes a majority of per-plane decisions.
     callback : Callable[int], optional
         A callback function that is called during classification. Called with
         the batch number once that batch has been classified.
@@ -116,6 +159,11 @@ def main(
         to 50.
     """
     validate_dimensions(dimensions)
+    validate_central_planes(infer_z_planes, dimensions, "2.5D inference")
+    if infer_z_planes > 1 and infer_pool not in ("mean", "vote"):
+        raise ValueError(
+            f"infer_pool must be 'mean' or 'vote', got {infer_pool!r}"
+        )
 
     signal_array = ensure_3d(
         signal_array, dimensions, name="Signal data", error=IOError
@@ -132,7 +180,7 @@ def main(
         # the depth-1 cube must not be rescaled in z, so match the z voxel
         # size to the data and pull a single plane
         network_voxel_sizes = (voxel_sizes[0], *network_voxel_sizes[1:])
-        cube_depth = 1
+        cube_depth = infer_z_planes
 
     # Too many workers doesn't increase speed, and uses huge amounts of RAM
     workers = get_num_processes(min_free_cpu_cores=n_free_cpus)
@@ -230,13 +278,11 @@ def main(
             mininterval=0.5,
         ):
             if dimensions == 2:
-                if data.shape[z_axis] != 1:
-                    raise ValueError(
-                        "2D classification expects a depth-1 cube, but got "
-                        f"depth {data.shape[z_axis]}"
-                    )
-                data = data.squeeze(z_axis)
-            output = model(data)
+                output = _classify_2d_batch(
+                    model, data, z_axis, infer_z_planes, infer_pool
+                )
+            else:
+                output = model(data)
             # in original keras, it seemed to held on to the output until the
             # end (possibly on GPU). This causes resources issues for very
             # heavy loads. So instead immediately move it to cpu/numpy

@@ -37,6 +37,8 @@ def main(
     cube_depth: int = 20,
     network_depth: depth_type = "50",
     dimensions: int = 3,
+    infer_z_planes: int = 1,
+    infer_pool: str = "mean",
     skip_detection: bool = False,
     skip_classification: bool = False,
     detected_cells: List[Cell] = None,
@@ -135,6 +137,14 @@ def main(
     dimensions : int
         Whether to run detection and classification in 3D (a z-stack, the
         default) or 2D (a single plane). Defaults to `3`.
+    infer_z_planes : int
+        2.5D classification. When greater than 1 (2D networks only), the 2D
+        model is run on this many central z-planes per candidate and the
+        per-plane predictions are pooled, recovering some axial context
+        without retraining. Defaults to `1` (single-plane 2D inference).
+    infer_pool : str
+        Pooling for 2.5D inference when `infer_z_planes` > 1: `"mean"` (the
+        default, averages softmax probabilities) or `"vote"` (majority).
     skip_detection : bool
         If selected, the detection step is skipped and instead we get the
         detected cells from the cell layer below (from a previous
@@ -284,6 +294,8 @@ def main(
                 normalize_channels=normalize_channels,
                 normalization_n_sampling_planes=normalization_n_sampling_planes,
                 dimensions=dimensions,
+                infer_z_planes=infer_z_planes,
+                infer_pool=infer_pool,
             )
         else:
             logger.info("No candidates, skipping classification")
