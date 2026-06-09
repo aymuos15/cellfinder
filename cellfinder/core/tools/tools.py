@@ -29,6 +29,21 @@ def validate_dimensions(dimensions: int) -> None:
         raise ValueError(f"dimensions must be 2 or 3, got {dimensions!r}")
 
 
+def validate_central_planes(n_planes: int, dimensions: int, what: str) -> None:
+    """Validate a central-z-plane count for a 2.5D feature.
+
+    `n_planes` must be >= 1, and reducing/pooling more than one plane (`what`,
+    e.g. "central-plane projection") is only meaningful for a 2D network.
+    """
+    if n_planes < 1:
+        raise ValueError(f"{what} plane count must be >= 1, got {n_planes!r}")
+    if n_planes > 1 and dimensions != 2:
+        raise ValueError(
+            f"{what} (more than one plane) is only valid for 2D networks "
+            "(dimensions=2)"
+        )
+
+
 def ensure_3d(
     array: np.ndarray,
     dimensions: int,

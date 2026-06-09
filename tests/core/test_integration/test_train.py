@@ -7,6 +7,7 @@ from pytest_mock.plugin import MockerFixture
 
 from cellfinder.core.classify.tools import model_input_channels
 from cellfinder.core.train.train_yaml import cli as train_run
+from cellfinder.core.train.train_yaml import run as train_run_fn
 
 data_dir = os.path.join(
     os.getcwd(), "tests", "data", "integration", "training"
@@ -45,6 +46,59 @@ def test_train(mocker, tmpdir):
 
     model_file = os.path.join(tmpdir, "model.keras")
     assert os.path.exists(model_file)
+
+
+def test_projection_rejected_in_3d(tmp_path):
+    with pytest.raises(ValueError, match="only valid for 2D"):
+        train_run_fn(
+            str(tmp_path),
+            training_yaml_file,
+            dimensions=3,
+            z_planes=3,
+        )
+
+
+@pytest.mark.slow
+def test_train_2d_projection(tmp_path):
+    import keras
+    import tifffile
+    from brainglobe_utils.IO.yaml import save_yaml
+
+    # build depth-3 cubes from the central planes of the 3D test cubes, so the
+    # max-projection over --z-planes 3 has real planes to reduce
+    cubes = tmp_path / "cells"
+    cubes.mkdir()
+    for fname in os.listdir(cell_cubes):
+        if fname.endswith(".tif"):
+            cube = tifffile.imread(os.path.join(cell_cubes, fname))
+            tifffile.imwrite(cubes / fname, cube[9:12])
+
+    yaml_file = tmp_path / "training_2d.yaml"
+    save_yaml(
+        {
+            "data": [
+                {"bg_channel": 1, "cell_def": "", "cube_dir": str(cubes),
+                 "signal_channel": 0, "type": "cell"},
+                {"bg_channel": 1, "cell_def": "", "cube_dir": str(cubes),
+                 "signal_channel": 0, "type": "no_cell"},
+            ]
+        },
+        yaml_file,
+    )
+
+    out_dir = str(tmp_path / "out")
+    sys.argv = [
+        "cellfinder_train", "-y", str(yaml_file), "-o", out_dir,
+        "--epochs", "1", "--dimensions", "2",
+        "--z-planes", "3", "--z-reduce", "max", "--no-augment",
+    ]
+    train_run()
+
+    model_file = os.path.join(out_dir, "model.keras")
+    assert os.path.exists(model_file)
+    model = keras.models.load_model(model_file)
+    # projection collapses z, so the model is still a 2D (batch, y, x, c) net
+    assert len(model.input_shape) == 4
 
 
 @pytest.mark.slow

@@ -48,7 +48,10 @@ from cellfinder.core.classify.tools import get_model
 from cellfinder.core.download.download import DEFAULT_DOWNLOAD_DIRECTORY
 from cellfinder.core.tools.prep import prep_model_weights
 from cellfinder.core.tools.tiff import TiffDir, TiffFile, TiffList
-from cellfinder.core.tools.tools import validate_dimensions
+from cellfinder.core.tools.tools import (
+    validate_central_planes,
+    validate_dimensions,
+)
 
 depth_type = Literal["18", "34", "50", "101", "152"]
 
@@ -198,6 +201,22 @@ def training_parse():
         default=3,
         help="Whether to train a 3D network (a z-stack cube, the default) or "
         "a 2D network (a single plane).",
+    )
+    training_parser.add_argument(
+        "--z-planes",
+        dest="z_planes",
+        type=check_positive_int,
+        default=1,
+        help="2D only: number of central z-planes to reduce into the training "
+        "image (with --z-reduce). 1 (default) is single-plane.",
+    )
+    training_parser.add_argument(
+        "--z-reduce",
+        dest="z_reduce",
+        choices=("center", "max", "mean"),
+        default="center",
+        help="2D only: how to reduce the central --z-planes into one image. "
+        "center keeps the middle plane; max/mean project the planes.",
     )
     training_parser.add_argument(
         "--batch-size",
@@ -405,6 +424,8 @@ def cli():
         model=args.model,
         network_depth=args.network_depth,
         dimensions=args.dimensions,
+        z_planes=args.z_planes,
+        z_reduce=args.z_reduce,
         learning_rate=args.learning_rate,
         continue_training=args.continue_training,
         test_fraction=args.test_fraction,
@@ -423,16 +444,27 @@ def cli():
     )
 
 
-def _squeeze_z_collate(sample, z_axis):
-    """Drop the singleton z axis from a (data, label) sample for 2D training.
+def _reduce_z_collate(sample, z_axis, z_reduce):
+    """Reduce the central z planes of a (data, label) sample to a 2D image.
 
     The dataset yields cubes in `(batch, *output_axis_order)` order; for 2D
-    the z axis has size 1 and is removed so the cube becomes a 2D `(y, x, c)`
-    image, matching the Conv2D network input. Used as the loader's collate_fn
-    (defined at module level so it stays picklable for worker processes).
+    the z axis is collapsed so the cube becomes a 2D `(y, x, c)` image matching
+    the Conv2D network input. `center` keeps the middle plane (the depth-1
+    default), `max`/`mean` project the central planes. Used as the loader's
+    collate_fn (defined at module level so it stays picklable for workers).
     """
     data, label = sample
-    return data.squeeze(z_axis), label
+    if z_reduce == "center":
+        data = data.select(z_axis, data.shape[z_axis] // 2)
+    elif z_reduce == "max":
+        data = data.amax(dim=z_axis)
+    elif z_reduce == "mean":
+        data = data.mean(dim=z_axis)
+    else:
+        raise ValueError(
+            f"z_reduce must be 'center', 'max' or 'mean', got {z_reduce!r}"
+        )
+    return data, label
 
 
 def get_dataloader(
@@ -446,6 +478,8 @@ def get_dataloader(
     augment_likelihood: float,
     normalize_channels: bool,
     dimensions: int = 3,
+    z_planes: int = 1,
+    z_reduce: str = "center",
 ) -> tuple[DataLoader, CuboidTiffDataset]:
     points_filenames = [f[0] for f in filenames]
 
@@ -461,7 +495,7 @@ def get_dataloader(
             norms = [(ch["mean"], ch["std"]) for ch in channels_norm]
             points_norm.append(norms)
 
-    cube_depth = 1 if dimensions == 2 else CUBE_DEPTH
+    cube_depth = z_planes if dimensions == 2 else CUBE_DEPTH
     dataset = CuboidTiffDataset(
         points=cells,
         points_filenames=points_filenames,
@@ -483,7 +517,9 @@ def get_dataloader(
     collate_fn = None
     if dimensions == 2:
         z_axis = dataset.output_axis_order.index("z") + 1
-        collate_fn = partial(_squeeze_z_collate, z_axis=z_axis)
+        collate_fn = partial(
+            _reduce_z_collate, z_axis=z_axis, z_reduce=z_reduce
+        )
     data_loader = DataLoader(
         dataset=dataset,
         sampler=sampler,
@@ -505,6 +541,8 @@ def run(
     model="resnet50_tv",
     network_depth="50",
     dimensions=3,
+    z_planes=1,
+    z_reduce="center",
     learning_rate=0.0001,
     continue_training=False,
     test_fraction=0.1,
@@ -525,6 +563,7 @@ def run(
     start_time = datetime.now()
 
     validate_dimensions(dimensions)
+    validate_central_planes(z_planes, dimensions, "central-plane projection")
 
     ensure_directory_exists(output_dir)
     model_weights = prep_model_weights(
@@ -590,6 +629,8 @@ def run(
             augment_likelihood=augment_likelihood,
             normalize_channels=normalize_channels,
             dimensions=dimensions,
+            z_planes=z_planes,
+            z_reduce=z_reduce,
         )
 
         # for saving checkpoints
@@ -612,6 +653,8 @@ def run(
         augment_likelihood=augment_likelihood,
         normalize_channels=normalize_channels,
         dimensions=dimensions,
+        z_planes=z_planes,
+        z_reduce=z_reduce,
     )
     callbacks = []
 
