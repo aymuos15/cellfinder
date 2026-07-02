@@ -77,10 +77,20 @@ def test_train_2d_projection(tmp_path):
     save_yaml(
         {
             "data": [
-                {"bg_channel": 1, "cell_def": "", "cube_dir": str(cubes),
-                 "signal_channel": 0, "type": "cell"},
-                {"bg_channel": 1, "cell_def": "", "cube_dir": str(cubes),
-                 "signal_channel": 0, "type": "no_cell"},
+                {
+                    "bg_channel": 1,
+                    "cell_def": "",
+                    "cube_dir": str(cubes),
+                    "signal_channel": 0,
+                    "type": "cell",
+                },
+                {
+                    "bg_channel": 1,
+                    "cell_def": "",
+                    "cube_dir": str(cubes),
+                    "signal_channel": 0,
+                    "type": "no_cell",
+                },
             ]
         },
         yaml_file,
@@ -88,9 +98,20 @@ def test_train_2d_projection(tmp_path):
 
     out_dir = str(tmp_path / "out")
     sys.argv = [
-        "cellfinder_train", "-y", str(yaml_file), "-o", out_dir,
-        "--epochs", "1", "--dimensions", "2",
-        "--z-planes", "3", "--z-reduce", "max", "--no-augment",
+        "cellfinder_train",
+        "-y",
+        str(yaml_file),
+        "-o",
+        out_dir,
+        "--epochs",
+        "1",
+        "--dimensions",
+        "2",
+        "--z-planes",
+        "3",
+        "--z-reduce",
+        "max",
+        "--no-augment",
     ]
     train_run()
 
@@ -99,6 +120,86 @@ def test_train_2d_projection(tmp_path):
     model = keras.models.load_model(model_file)
     # projection collapses z, so the model is still a 2D (batch, y, x, c) net
     assert len(model.input_shape) == 4
+
+
+def test_train_2d_projection_normalized(mocker: MockerFixture, tmp_path):
+    import tifffile
+    from brainglobe_utils.IO.yaml import save_yaml
+
+    # depth-3 cubes so max-projection over --z-planes 3 has planes to reduce,
+    # plus per-channel stats so --normalize-channels has data to apply
+    cubes = tmp_path / "cells"
+    cubes.mkdir()
+    for fname in os.listdir(cell_cubes):
+        if fname.endswith(".tif"):
+            cube = tifffile.imread(os.path.join(cell_cubes, fname))
+            tifffile.imwrite(cubes / fname, cube[9:12])
+
+    stats = {
+        "signal_mean": 241.31,
+        "signal_std": 154.92,
+        "bg_mean": 650.94,
+        "bg_std": 217.90,
+    }
+    yaml_file = tmp_path / "training_2d_norm.yaml"
+    save_yaml(
+        {
+            "data": [
+                {
+                    "bg_channel": 1,
+                    "cell_def": "",
+                    "cube_dir": str(cubes),
+                    "signal_channel": 0,
+                    "type": "cell",
+                    **stats,
+                },
+                {
+                    "bg_channel": 1,
+                    "cell_def": "",
+                    "cube_dir": str(cubes),
+                    "signal_channel": 0,
+                    "type": "no_cell",
+                    **stats,
+                },
+            ]
+        },
+        yaml_file,
+    )
+
+    out_dir = str(tmp_path / "out")
+    mocker.patch(
+        "sys.argv",
+        [
+            "cellfinder_train",
+            "-y",
+            str(yaml_file),
+            "-o",
+            out_dir,
+            "--epochs",
+            "1",
+            "--dimensions",
+            "2",
+            "--z-planes",
+            "3",
+            "--z-reduce",
+            "max",
+            "--normalize-channels",
+            "--no-augment",
+        ],
+    )
+    get_model = mocker.patch(
+        "cellfinder.core.train.train_yaml.get_model", autospec=True
+    )
+    train_run()
+
+    # normalization stats reached the 2D, z-reduced training and val datasets
+    (fit_mock,) = [
+        m for m in get_model.mock_calls if repr(m).startswith("call().fit(")
+    ]
+    train_ds = fit_mock.kwargs["x"].dataset
+    val_ds = fit_mock.kwargs["validation_data"].dataset
+    assert train_ds.points_norm_arr is not None
+    assert val_ds.points_norm_arr is not None
 
 
 @pytest.mark.slow
