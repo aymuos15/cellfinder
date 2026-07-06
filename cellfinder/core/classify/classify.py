@@ -19,6 +19,7 @@ from cellfinder.core.classify.tools import get_model, model_input_channels
 from cellfinder.core.tools.image_processing import dataset_mean_std
 from cellfinder.core.tools.tools import (
     deprecate_positional_args,
+    ensure_3d,
     validate_dimensions,
 )
 from cellfinder.core.train.train_yaml import depth_type, models
@@ -116,23 +117,14 @@ def main(
     """
     validate_dimensions(dimensions)
 
-    if dimensions == 3:
-        if signal_array.ndim != 3:
-            raise IOError("Signal data must be 3D")
-        if background_array is not None and background_array.ndim != 3:
-            raise IOError("Background data must be 3D")
-    else:
-        if signal_array.ndim not in (2, 3):
-            raise IOError("2D classification needs 2D or 3D signal data")
-        if background_array is not None and background_array.ndim not in (
-            2,
-            3,
-        ):
-            raise IOError("2D classification needs 2D or 3D background data")
-        if signal_array.ndim == 2:
-            signal_array = signal_array[np.newaxis, ...]
-        if background_array is not None and background_array.ndim == 2:
-            background_array = background_array[np.newaxis, ...]
+    signal_array = ensure_3d(
+        signal_array, dimensions, name="Signal data", error=IOError
+    )
+    if background_array is not None:
+        background_array = ensure_3d(
+            background_array, dimensions, name="Background data", error=IOError
+        )
+    if dimensions == 2:
         if len(voxel_sizes) == 2:
             voxel_sizes = (1.0, *voxel_sizes)
         if len(network_voxel_sizes) == 2:

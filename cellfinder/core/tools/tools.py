@@ -29,6 +29,31 @@ def validate_dimensions(dimensions: int) -> None:
         raise ValueError(f"dimensions must be 2 or 3, got {dimensions!r}")
 
 
+def ensure_3d(
+    array: np.ndarray,
+    dimensions: int,
+    *,
+    name: str,
+    error: Type[Exception] = ValueError,
+) -> np.ndarray:
+    """Validate an input array's rank for the processing mode.
+
+    In 3D mode the array must be 3D. In 2D mode a 2D or 3D array is accepted,
+    and a 2D image is promoted to a depth-1 volume so it flows through the
+    shared 3D pipeline. `name` labels the array in error messages and `error`
+    selects the exception type raised on a rank mismatch.
+    """
+    if dimensions == 3:
+        if array.ndim != 3:
+            raise error(f"{name} must be 3D")
+        return array
+    if array.ndim not in (2, 3):
+        raise error(f"2D {name.lower()} must be 2D or 3D")
+    if array.ndim == 2:
+        return array[np.newaxis, ...]
+    return array
+
+
 def get_max_possible_int_value(dtype: Type[np.number]) -> int:
     """
     Returns the maximum allowed integer for a numpy array of given type.

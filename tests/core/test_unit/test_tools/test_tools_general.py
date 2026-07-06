@@ -348,3 +348,30 @@ def test_validate_dimensions_ok(dimensions):
 def test_validate_dimensions_bad(dimensions):
     with pytest.raises(ValueError):
         tools.validate_dimensions(dimensions)
+
+
+def test_ensure_3d_passes_3d_through():
+    array = np.zeros((4, 5, 6))
+    for dimensions in (2, 3):
+        assert tools.ensure_3d(array, dimensions, name="Data") is array
+
+
+def test_ensure_3d_promotes_2d_in_2d_mode():
+    array = np.zeros((5, 6))
+    out = tools.ensure_3d(array, 2, name="Data")
+    assert out.shape == (1, 5, 6)
+
+
+def test_ensure_3d_rejects_2d_in_3d_mode():
+    with pytest.raises(ValueError, match="Data must be 3D"):
+        tools.ensure_3d(np.zeros((5, 6)), 3, name="Data")
+
+
+def test_ensure_3d_rejects_4d_in_2d_mode():
+    with pytest.raises(ValueError, match="2D data must be 2D or 3D"):
+        tools.ensure_3d(np.zeros((2, 3, 4, 5)), 2, name="Data")
+
+
+def test_ensure_3d_honours_error_type():
+    with pytest.raises(IOError):
+        tools.ensure_3d(np.zeros((5, 6)), 3, name="Data", error=IOError)

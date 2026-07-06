@@ -27,6 +27,7 @@ from cellfinder.core.detect.filters.setup_filters import DetectionSettings
 from cellfinder.core.detect.filters.volume.volume_filter import VolumeFilter
 from cellfinder.core.tools.tools import (
     deprecate_positional_args,
+    ensure_3d,
     inference_wrapper,
     validate_dimensions,
 )
@@ -188,16 +189,9 @@ def main(
             f"{signal_array.dtype}"
         )
 
-    if dimensions == 3:
-        if signal_array.ndim != 3:
-            raise ValueError("Input data must be 3D")
-    else:
-        if signal_array.ndim not in (2, 3):
-            raise ValueError("2D detection needs 2D or 3D input data")
-        if signal_array.ndim == 2:
-            signal_array = signal_array[np.newaxis, ...]
-        if len(voxel_sizes) == 2:
-            voxel_sizes = (1.0, *voxel_sizes)
+    signal_array = ensure_3d(signal_array, dimensions, name="Input data")
+    if dimensions == 2 and len(voxel_sizes) == 2:
+        voxel_sizes = (1.0, *voxel_sizes)
 
     if end_plane < 0:
         end_plane = len(signal_array)
